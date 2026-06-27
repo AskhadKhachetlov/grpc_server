@@ -1,6 +1,10 @@
+#include <iostream>
+#include <memory>
+#include <string>
+
 #include <grpcpp/grpcpp.h>
-#include "proto/echo.grpc.pb.h"
-#include "proto/echo.pb.h"
+#include "echo.grpc.pb.h"
+#include "echo.pb.h"
 
 using echo::EchoRequest;
 using echo::EchoResponse;
