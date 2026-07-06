@@ -2,7 +2,7 @@
 
 C++ gRPC client-server project built with CMake and vcpkg.
 The client sends a string to the server.
-Server responds with "OK".
+The server returns the same string.
 
 ## Requirements
 

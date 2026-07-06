@@ -1,10 +1,9 @@
 #include <iostream>
 #include <memory>
-#include <string>
 
 #include <grpcpp/grpcpp.h>
-#include "echo.grpc.pb.h"
-#include "echo.pb.h"
+#include "protolib/echo.grpc.pb.h"
+#include "protolib/echo.pb.h"
 
 using echo::EchoRequest;
 using echo::EchoResponse;
@@ -50,8 +49,6 @@ int main()
     std::string msg = "Hello gRPC!";
     std::string reply = client.Echo(msg);
 
-    std::cout << msg << std::endl;
-    std::cout << reply << std::endl;
-
-    return 0;
+    std::cout << "Client: " << msg << std::endl;
+    std::cout << "Server: " << reply << std::endl;
 }

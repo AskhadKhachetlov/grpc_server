@@ -1,10 +1,9 @@
 #include <iostream>
 #include <memory>
-#include <string>
 
 #include <grpcpp/grpcpp.h>
-#include "echo.grpc.pb.h"
-#include "echo.pb.h"
+#include "protolib/echo.grpc.pb.h"
+#include "protolib/echo.pb.h"
 
 using echo::EchoRequest;
 using echo::EchoResponse;
@@ -16,9 +15,10 @@ using grpc::Status;
 
 class EchoServiceImpl final : public EchoService::Service {
 public:
-    Status Echo(ServerContext*, const EchoRequest*, EchoResponse *response) override 
+    Status Echo(ServerContext*, const EchoRequest* request, EchoResponse* response) override 
     {
-        response->set_message("OK");
+        std::string msg = request->message();
+        response->set_message(msg);
         return Status::OK;
     }
 };
@@ -35,6 +35,4 @@ int main() {
     std::cout << "Server ready: " << address << std::endl;
 
     server->Wait();
-
-    return 0;
 }
