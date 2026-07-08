@@ -8,27 +8,36 @@
 using echo::EchoRequest;
 using echo::EchoResponse;
 using echo::EchoService;
+
 using grpc::Server;
 using grpc::ServerBuilder;
-using grpc::ServerContext;
+using grpc::ServerUnaryReactor;
 using grpc::Status;
+using grpc::CallbackServerContext;
+using grpc::InsecureServerCredentials;
 
-class EchoServiceImpl final : public EchoService::Service {
+class EchoServiceImpl final : public EchoService::CallbackService
+{
 public:
-    Status Echo(ServerContext*, const EchoRequest* request, EchoResponse* response) override 
+    ServerUnaryReactor *Echo(
+        CallbackServerContext *context,
+        const EchoRequest *request,
+        EchoResponse *response) override
     {
-        std::string msg = request->message();
-        response->set_message(msg);
-        return Status::OK;
+        response->set_message(request->message());
+        ServerUnaryReactor *reactor = context->DefaultReactor();
+        reactor->Finish(Status::OK);
+        return reactor;
     }
 };
 
-int main() {
+int main()
+{
     std::string address = "0.0.0.0:50051";
     EchoServiceImpl service;
 
     ServerBuilder builder;
-    builder.AddListeningPort(address, grpc::InsecureServerCredentials());
+    builder.AddListeningPort(address, InsecureServerCredentials());
     builder.RegisterService(&service);
 
     std::unique_ptr<Server> server = builder.BuildAndStart();

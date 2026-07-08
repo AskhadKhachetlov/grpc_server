@@ -8,14 +8,21 @@
 using echo::EchoRequest;
 using echo::EchoResponse;
 using echo::EchoService;
+
 using grpc::Channel;
+using grpc::ClientAsyncResponseReader;
 using grpc::ClientContext;
+using grpc::CompletionQueue;
 using grpc::Status;
+using grpc::CreateChannel;
+using grpc::InsecureChannelCredentials;
+
 
 class EchoClient
 {
 public:
-    EchoClient(std::shared_ptr<Channel> channel) : stub_(EchoService::NewStub(channel)) {}
+    explicit EchoClient(std::shared_ptr<Channel> channel)
+        : stub_(EchoService::NewStub(channel)) {}
 
     std::string Echo(const std::string &msg)
     {
@@ -24,9 +31,19 @@ public:
 
         EchoResponse response;
         ClientContext context;
-        Status status = stub_->Echo(&context, request, &response);
+        CompletionQueue cq;
+        Status status;
 
-        if (status.ok())
+        std::unique_ptr<ClientAsyncResponseReader<EchoResponse>> rpc(
+            stub_->AsyncEcho(&context, request, &cq));
+
+        rpc->Finish(&response, &status, (void *)1);
+
+        void *got_tag = nullptr;
+        bool ok = false;
+        cq.Next(&got_tag, &ok);
+
+        if (ok && got_tag == (void *)1 && status.ok())
         {
             return response.message();
         }
@@ -40,9 +57,7 @@ private:
 
 int main()
 {
-    auto channel = grpc::CreateChannel(
-        "localhost:50051",
-        grpc::InsecureChannelCredentials());
+    auto channel = CreateChannel("localhost:50051", InsecureChannelCredentials());
 
     EchoClient client(channel);
 

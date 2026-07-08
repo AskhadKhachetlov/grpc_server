@@ -5,7 +5,7 @@ add_library(ProjectConfiguration INTERFACE)
 
 target_compile_options(ProjectConfiguration
     INTERFACE
-        "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4;/WX>"
+        "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4;/WX;/wd4702>"
         "$<$<NOT:$<COMPILE_LANG_AND_ID:CXX,MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>"
 )
 
