@@ -7,7 +7,9 @@ include(project_configuration)
 
 find_package(gRPC CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
+find_package(OpenCV CONFIG REQUIRED)
 
 add_subdirectory(proto)
 add_subdirectory(client)
 add_subdirectory(server)
+add_subdirectory(image_processor)
