@@ -1,8 +1,16 @@
-add_subdirectory(src)
+add_library(image_processor src/image_processor.cc)
 
-option(IMAGE_PROCESSOR_BUILD_TESTS "Build image_processor tests" ON)
+target_include_directories(image_processor
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
-if(IMAGE_PROCESSOR_BUILD_TESTS)
-    #enable_testing()
+target_link_libraries(image_processor
+    PUBLIC
+        project_configuration
+        ${OpenCV_LIBS}
+)
+
+if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()

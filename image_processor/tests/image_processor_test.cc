@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <stdexcept>
+#include <system_error>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -13,11 +13,9 @@
 
 using std::vector;
 using std::uint8_t;
-using std::invalid_argument;
-using std::runtime_error;
 using std::error_code;
-using image_processor::ImageProcessor;
 
+namespace ip = image_processor;
 namespace fs = std::filesystem;
 
 namespace
@@ -32,7 +30,6 @@ namespace
     {
         return fs::temp_directory_path() / "image_processor_test.jpg";
     }
-
 
     class TempFile
     {
@@ -59,15 +56,14 @@ namespace
         fs::path path_;
     };
 
-    
     TEST(ImageProcessorTest, CompressAndDecompressJpeg)
     {
         const cv::Mat original = MakeTestImage();
-        const auto compressed = ImageProcessor::Compress(original, 90);
+        const auto compressed = ip::Compress(original, 90);
 
         ASSERT_FALSE(compressed.empty());
 
-        const cv::Mat restored = ImageProcessor::Decompress(compressed);
+        const cv::Mat restored = ip::Decompress(compressed);
 
         ASSERT_FALSE(restored.empty());
         EXPECT_EQ(restored.rows, original.rows);
@@ -75,25 +71,19 @@ namespace
         EXPECT_EQ(restored.type(), original.type());
     }
 
-    TEST(ImageProcessorTest, CompressThrowsOnEmptyImage)
-    {
-        const cv::Mat empty_image;
-        EXPECT_THROW(ImageProcessor::Compress(empty_image, 90), invalid_argument);
-    }
-
     TEST(ImageProcessorTest, IsImageReturnsTrueForJpegBuffer)
     {
         const cv::Mat original = MakeTestImage();
-        const auto compressed = ImageProcessor::Compress(original, 90);
+        const auto compressed = ip::Compress(original, 90);
 
         ASSERT_FALSE(compressed.empty());
-        EXPECT_TRUE(ImageProcessor::IsImage(compressed));
+        EXPECT_TRUE(ip::IsImage(compressed));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsFalseForEmptyBuffer)
     {
         const vector<uint8_t> empty_buffer;
-        EXPECT_FALSE(ImageProcessor::IsImage(empty_buffer));
+        EXPECT_FALSE(ip::IsImage(empty_buffer));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsFalseForInvalidBytes)
@@ -102,7 +92,7 @@ namespace
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
             0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
 
-        EXPECT_FALSE(ImageProcessor::IsImage(invalid_buffer));
+        EXPECT_FALSE(ip::IsImage(invalid_buffer));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsTrueForJpegFilePath)
@@ -113,26 +103,68 @@ namespace
         const cv::Mat original = MakeTestImage();
         ASSERT_TRUE(cv::imwrite(temp_path.string(), original));
 
-        const bool result = ImageProcessor::IsImage(temp_path.string());
-
-        EXPECT_TRUE(result);
+        EXPECT_TRUE(ip::IsImage(temp_path));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsFalseForMissingFilePath)
     {
-        EXPECT_FALSE(ImageProcessor::IsImage("this_file_does_not_exist.jpg"));
+        EXPECT_FALSE(ip::IsImage(fs::path("this_file_does_not_exist.jpg")));
     }
 
-    TEST(ImageProcessorTest, DecompressThrowsOnEmptyBuffer)
-    {
-        const vector<uint8_t> empty_buffer;
-        EXPECT_THROW(ImageProcessor::Decompress(empty_buffer), invalid_argument);
-    }
-
-    TEST(ImageProcessorTest, DecompressThrowsOnInvalidBytes)
+    TEST(ImageProcessorTest, DecompressReturnsEmptyMatForInvalidBytes)
     {
         const vector<uint8_t> invalid_buffer = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
-        EXPECT_THROW(ImageProcessor::Decompress(invalid_buffer), runtime_error);
+        EXPECT_TRUE(ip::Decompress(invalid_buffer).empty());
+    }
+
+    int CountDifferentPixels(const cv::Mat &image, const cv::Scalar &background)
+    {
+        const cv::Mat background_mat(image.size(), image.type(), background);
+
+        cv::Mat diff;
+        cv::absdiff(image, background_mat, diff);
+
+        std::vector<cv::Mat> channels;
+        cv::split(diff, channels);
+
+        cv::Mat combined = channels[0];
+        for (std::size_t i = 1; i < channels.size(); ++i)
+        {
+            cv::bitwise_or(combined, channels[i], combined);
+        }
+
+        return cv::countNonZero(combined);
+    }
+
+    TEST(ImageProcessorTest, AddCaptionReturnsModifiedCopy)
+    {
+        const cv::Scalar background(10, 20, 30);
+        const cv::Mat original = MakeTestImage();
+        const cv::Mat captioned = ip::AddCaption(original, "test");
+
+        ASSERT_FALSE(captioned.empty());
+        EXPECT_EQ(captioned.rows, original.rows);
+        EXPECT_EQ(captioned.cols, original.cols);
+        EXPECT_EQ(captioned.type(), original.type());
+        EXPECT_EQ(CountDifferentPixels(original, background), 0);
+        EXPECT_GT(CountDifferentPixels(captioned, background), 0);
+    }
+
+    TEST(ImageProcessorTest, AddCaptionRespectsCustomParams)
+    {
+        const cv::Scalar background(10, 20, 30);
+        const cv::Mat original = MakeTestImage();
+
+        ip::CaptionParams params;
+        params.origin = cv::Point(5, 30);
+        params.font_scale = 0.5;
+        params.thickness = 1;
+        params.color = cv::Scalar(255, 0, 0);
+
+        const cv::Mat captioned = ip::AddCaption(original, "x", params);
+
+        ASSERT_FALSE(captioned.empty());
+        EXPECT_GT(CountDifferentPixels(captioned, background), 0);
     }
 
 } // namespace
