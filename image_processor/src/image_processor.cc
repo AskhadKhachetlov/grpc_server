@@ -8,7 +8,7 @@
 namespace image_processor
 {
 
-    bool IsImage(const std::vector<std::uint8_t> &data)
+    bool IsValidImage(const std::vector<std::uint8_t> &data)
     {
         if (data.empty())
         {
@@ -23,7 +23,7 @@ namespace image_processor
         return !decoded.empty();
     }
 
-    bool IsImage(const std::filesystem::path &path)
+    bool IsValidImage(const std::filesystem::path &path)
     {
         const cv::Mat image = cv::imread(path.string(), cv::IMREAD_UNCHANGED);
         return !image.empty();

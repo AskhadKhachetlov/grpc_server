@@ -1,4 +1,4 @@
-add_library(protolib ${CMAKE_CURRENT_SOURCE_DIR}/protolib/echo.proto)
+add_library(protolib ${CMAKE_CURRENT_SOURCE_DIR}/protolib/caption_service.proto)
 
 target_link_libraries(protolib PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 

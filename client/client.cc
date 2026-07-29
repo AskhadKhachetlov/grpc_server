@@ -1,13 +1,15 @@
 #include <iostream>
+#include <fstream>
+#include <iterator>
 #include <memory>
 
 #include <grpcpp/grpcpp.h>
-#include "protolib/echo.grpc.pb.h"
-#include "protolib/echo.pb.h"
+#include "protolib/caption_service.grpc.pb.h"
+#include "protolib/caption_service.pb.h"
 
-using echo::EchoRequest;
-using echo::EchoResponse;
-using echo::EchoService;
+using caption_service::AddCaptionRequest;
+using caption_service::AddCaptionResponse;
+using caption_service::CaptionService;
 
 using grpc::Channel;
 using grpc::ClientAsyncResponseReader;
@@ -17,25 +19,35 @@ using grpc::Status;
 using grpc::CreateChannel;
 using grpc::InsecureChannelCredentials;
 
+namespace
+{
+    std::string ReadFile(const std::string &path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+    }
+} // namespace
 
-class EchoClient
+class CaptionClient
 {
 public:
-    explicit EchoClient(std::shared_ptr<Channel> channel)
-        : stub_(EchoService::NewStub(channel)) {}
+    explicit CaptionClient(std::shared_ptr<Channel> channel)
+        : stub_(CaptionService::NewStub(channel)) {}
 
-    std::string Echo(const std::string &msg)
+    std::string AddCaption(const std::string &image_data, const std::string &caption)
     {
-        EchoRequest request;
-        request.set_message(msg);
+        AddCaptionRequest request;
+        request.set_image(image_data);
+        request.set_caption(caption);
 
-        EchoResponse response;
+        AddCaptionResponse response;
         ClientContext context;
         CompletionQueue cq;
         Status status;
 
-        std::unique_ptr<ClientAsyncResponseReader<EchoResponse>> rpc(
-            stub_->AsyncEcho(&context, request, &cq));
+        std::unique_ptr<ClientAsyncResponseReader<AddCaptionResponse>> rpc(
+            stub_->AsyncAddCaption(&context, request, &cq));
 
         rpc->Finish(&response, &status, (void *)1);
 
@@ -45,25 +57,49 @@ public:
 
         if (ok && got_tag == (void *)1 && status.ok())
         {
-            return response.message();
+            return response.image();
         }
 
-        return "Error: " + status.error_message();
+        std::cerr << "Error: " << status.error_message() << std::endl;
+        return "";
     }
 
 private:
-    std::unique_ptr<EchoService::Stub> stub_;
+    std::unique_ptr<CaptionService::Stub> stub_;
 };
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc < 3)
+    {
+        std::cerr << "Usage: " << argv[0] << " <image_path> <caption>" << std::endl;
+        return 1;
+    }
+
+    const std::string image_path = argv[1];
+    const std::string caption = argv[2];
+
+    const std::string image_data = ReadFile(image_path);
+
+    if (image_data.empty())
+    {
+        std::cerr << "Failed to read image: " << image_path << std::endl;
+        return 1;
+    }
+
     auto channel = CreateChannel("localhost:50051", InsecureChannelCredentials());
+    CaptionClient client(channel);
 
-    EchoClient client(channel);
+    const std::string result = client.AddCaption(image_data, caption);
+    if (result.empty())
+    {
+        std::cerr << "Failed to get captioned image" << std::endl;
+        return 1;
+    }
 
-    std::string msg = "Hello gRPC!";
-    std::string reply = client.Echo(msg);
+    const std::string output_path = "captioned_output.jpg";
+    std::ofstream out(output_path, std::ios::binary);
+    out.write(result.data(), result.size());
 
-    std::cout << "Client: " << msg << std::endl;
-    std::cout << "Server: " << reply << std::endl;
+    std::cout << "Saved captioned image to " << output_path << std::endl;
 }
