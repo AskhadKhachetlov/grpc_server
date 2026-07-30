@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package caption_service;
+
+service CaptionService {
+    rpc AddCaption(AddCaptionRequest) returns (AddCaptionResponse);
+}
+
+message AddCaptionRequest {
+    bytes image = 1;
+    string caption = 2;
+}
+
+message AddCaptionResponse {
+    bytes image = 1;
+}

@@ -4,4 +4,5 @@ target_link_libraries(server
     PRIVATE 
         protolib
         project_configuration
+        image_processor
 )

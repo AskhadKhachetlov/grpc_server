@@ -77,13 +77,13 @@ namespace
         const auto compressed = ip::Compress(original, 90);
 
         ASSERT_FALSE(compressed.empty());
-        EXPECT_TRUE(ip::IsImage(compressed));
+        EXPECT_TRUE(ip::IsValidImage(compressed));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsFalseForEmptyBuffer)
     {
         const vector<uint8_t> empty_buffer;
-        EXPECT_FALSE(ip::IsImage(empty_buffer));
+        EXPECT_FALSE(ip::IsValidImage(empty_buffer));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsFalseForInvalidBytes)
@@ -92,7 +92,7 @@ namespace
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
             0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
 
-        EXPECT_FALSE(ip::IsImage(invalid_buffer));
+        EXPECT_FALSE(ip::IsValidImage(invalid_buffer));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsTrueForJpegFilePath)
@@ -103,12 +103,12 @@ namespace
         const cv::Mat original = MakeTestImage();
         ASSERT_TRUE(cv::imwrite(temp_path.string(), original));
 
-        EXPECT_TRUE(ip::IsImage(temp_path));
+        EXPECT_TRUE(ip::IsValidImage(temp_path));
     }
 
     TEST(ImageProcessorTest, IsImageReturnsFalseForMissingFilePath)
     {
-        EXPECT_FALSE(ip::IsImage(fs::path("this_file_does_not_exist.jpg")));
+        EXPECT_FALSE(ip::IsValidImage(fs::path("this_file_does_not_exist.jpg")));
     }
 
     TEST(ImageProcessorTest, DecompressReturnsEmptyMatForInvalidBytes)

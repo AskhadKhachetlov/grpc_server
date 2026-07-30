@@ -18,8 +18,8 @@ namespace image_processor
         cv::Scalar color = cv::Scalar(0, 0, 255);
     };
 
-    bool IsImage(const std::vector<std::uint8_t> &data);
-    bool IsImage(const std::filesystem::path &path);
+    bool IsValidImage(const std::vector<std::uint8_t> &data);
+    bool IsValidImage(const std::filesystem::path &path);
 
     // Сжимает изображение в JPEG. Требует непустого изображения на входе.
     // Возвращает пустой вектор, если кодирование не удалось.
