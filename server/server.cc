@@ -39,11 +39,30 @@ namespace
     class ActiveRequestGuard
     {
     public:
-        explicit ActiveRequestGuard(std::atomic<std::size_t> &counter) : counter_(counter) {}
+        ActiveRequestGuard(std::atomic<std::size_t> &counter, std::size_t max_count)
+            : counter_(counter)
+        {
+            const std::size_t previous_count =
+                counter_.fetch_add(1, std::memory_order_acq_rel);
+            acquired_ = previous_count < max_count;
+
+            if (!acquired_)
+            {
+                counter_.fetch_sub(1, std::memory_order_acq_rel);
+            }
+        }
 
         ~ActiveRequestGuard()
         {
-            counter_.fetch_sub(1, std::memory_order_acq_rel);
+            if (acquired_)
+            {
+                counter_.fetch_sub(1, std::memory_order_acq_rel);
+            }
+        }
+
+        bool Acquired() const
+        {
+            return acquired_;
         }
 
         ActiveRequestGuard(const ActiveRequestGuard &) = delete;
@@ -51,14 +70,14 @@ namespace
 
     private:
         std::atomic<std::size_t> &counter_;
+        bool acquired_;
     };
 } // namespace
 
 class CaptionServiceImpl final : public CaptionService::CallbackService
 {
 public:
-    explicit CaptionServiceImpl(std::size_t max_concurrent_requests)
-        : max_concurrent_requests_(max_concurrent_requests) {}
+    static std::size_t max_concurrent_requests;
 
     ServerUnaryReactor *AddCaption(
         CallbackServerContext *context,
@@ -66,19 +85,14 @@ public:
         AddCaptionResponse *response) override
     {
         ServerUnaryReactor *reactor = context->DefaultReactor();
+        const ActiveRequestGuard guard(active_requests_, max_concurrent_requests);
 
-        const std::size_t previous_count =
-            active_requests_.fetch_add(1, std::memory_order_acq_rel);
-
-        if (previous_count >= max_concurrent_requests_)
+        if (!guard.Acquired())
         {
-            active_requests_.fetch_sub(1, std::memory_order_acq_rel);
             reactor->Finish(Status(StatusCode::RESOURCE_EXHAUSTED,
                                    "Server is busy, try again later"));
             return reactor;
         }
-
-        const ActiveRequestGuard guard(active_requests_);
 
         const std::vector<std::uint8_t> input_bytes = ToBytes(request->image());
 
@@ -104,14 +118,13 @@ public:
     }
 
 private:
-    const std::size_t max_concurrent_requests_;
     std::atomic<std::size_t> active_requests_{0};
 };
 
+std::size_t CaptionServiceImpl::max_concurrent_requests = kDefaultMaxConcurrentRequests;
+
 int main(int argc, char **argv)
 {
-    std::size_t max_concurrent_requests = kDefaultMaxConcurrentRequests;
-
     if (argc >= 2)
     {
         try
@@ -123,7 +136,7 @@ int main(int argc, char **argv)
                           << argv[1] << std::endl;
                 return 1;
             }
-            max_concurrent_requests = static_cast<std::size_t>(parsed);
+            CaptionServiceImpl::max_concurrent_requests = static_cast<std::size_t>(parsed);
         }
         catch (const std::exception &)
         {
@@ -133,14 +146,14 @@ int main(int argc, char **argv)
     }
 
     std::string address = "0.0.0.0:50051";
-    CaptionServiceImpl service(max_concurrent_requests);
+    CaptionServiceImpl service;
     ServerBuilder builder;
     builder.AddListeningPort(address, InsecureServerCredentials());
     builder.RegisterService(&service);
 
     std::unique_ptr<Server> server = builder.BuildAndStart();
-    std::cout << "Server ready: " << address
-              << " (max concurrent requests: " << max_concurrent_requests << ")" << std::endl;
+    std::cout << "Server ready: " << address << " (max concurrent requests: "
+              << CaptionServiceImpl::max_concurrent_requests << ")" << std::endl;
 
     server->Wait();
 }
