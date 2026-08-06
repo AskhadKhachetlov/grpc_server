@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstddef>
 #include <exception>
+#include <optional>
+#include <cstdlib>
 
 #include <grpcpp/grpcpp.h>
 
@@ -36,48 +38,115 @@ namespace
         return std::vector<std::uint8_t>(data.begin(), data.end());
     }
 
-    class ActiveRequestGuard
+    std::size_t ParseMaxConcurrentRequests(int argc, char **argv)
+    {
+        if (argc < 2)
+        {
+            return kDefaultMaxConcurrentRequests;
+        }
+
+        try
+        {
+            const long parsed = std::stol(argv[1]);
+            if (parsed <= 0)
+            {
+                std::cerr << "max_concurrent_requests must be a positive integer, got: "
+                          << argv[1] << std::endl;
+                std::exit(1);
+            }
+            return static_cast<std::size_t>(parsed);
+        }
+        catch (const std::exception &)
+        {
+            std::cerr << "Invalid max_concurrent_requests value: " << argv[1] << std::endl;
+            std::exit(1);
+        }
+    }
+
+    class SessionManager
     {
     public:
-        ActiveRequestGuard(std::atomic<std::size_t> &counter, std::size_t max_count)
-            : counter_(counter)
+        class Session
         {
-            const std::size_t previous_count =
-                counter_.fetch_add(1, std::memory_order_acq_rel);
-            acquired_ = previous_count < max_count;
-
-            if (!acquired_)
+        public:
+            Session(Session &&other) noexcept : manager_(other.manager_)
             {
-                counter_.fetch_sub(1, std::memory_order_acq_rel);
+                other.manager_ = nullptr;
             }
-        }
 
-        ~ActiveRequestGuard()
-        {
-            if (acquired_)
+            Session &operator=(Session &&other) noexcept
             {
-                counter_.fetch_sub(1, std::memory_order_acq_rel);
+                if (this != &other)
+                {
+                    Release();
+                    manager_ = other.manager_;
+                    other.manager_ = nullptr;
+                }
+                return *this;
             }
-        }
 
-        bool Acquired() const
+            ~Session()
+            {
+                Release();
+            }
+
+            Session(const Session &) = delete;
+            Session &operator=(const Session &) = delete;
+
+        private:
+            friend class SessionManager;
+
+            explicit Session(SessionManager *manager) : manager_(manager) {}
+
+            void Release()
+            {
+                if (manager_ != nullptr)
+                {
+                    manager_->ReleaseSlot();
+                    manager_ = nullptr;
+                }
+            }
+
+            SessionManager *manager_;
+        };
+
+        explicit SessionManager(std::size_t max_sessions) : available_slots_(max_sessions) {}
+
+        std::optional<Session> CreateNewSession()
         {
-            return acquired_;
+            std::size_t current = available_slots_.load(std::memory_order_acquire);
+
+            while (current > 0)
+            {
+                if (available_slots_.compare_exchange_weak(
+                        current, current - 1,
+                        std::memory_order_acq_rel, std::memory_order_acquire))
+                {
+                    return Session(this);
+                }
+            }
+
+            return std::nullopt;
         }
 
-        ActiveRequestGuard(const ActiveRequestGuard &) = delete;
-        ActiveRequestGuard &operator=(const ActiveRequestGuard &) = delete;
+        SessionManager(const SessionManager &) = delete;
+        SessionManager &operator=(const SessionManager &) = delete;
 
     private:
-        std::atomic<std::size_t> &counter_;
-        bool acquired_;
+        void ReleaseSlot()
+        {
+            available_slots_.fetch_add(1, std::memory_order_acq_rel);
+        }
+
+        std::atomic<std::size_t> available_slots_;
     };
 } // namespace
 
 class CaptionServiceImpl final : public CaptionService::CallbackService
 {
 public:
-    static std::size_t max_concurrent_requests;
+    explicit CaptionServiceImpl(std::size_t max_concurrent_requests)
+        : session_manager_(max_concurrent_requests) {}
 
     ServerUnaryReactor *AddCaption(
         CallbackServerContext *context,
@@ -85,9 +154,10 @@ public:
         AddCaptionResponse *response) override
     {
         ServerUnaryReactor *reactor = context->DefaultReactor();
-        const ActiveRequestGuard guard(active_requests_, max_concurrent_requests);
 
-        if (!guard.Acquired())
+        auto session = session_manager_.CreateNewSession();
+
+        if (!session.has_value())
         {
             reactor->Finish(Status(StatusCode::RESOURCE_EXHAUSTED,
                                    "Server is busy, try again later"));
@@ -118,42 +188,22 @@ public:
     }
 
 private:
-    std::atomic<std::size_t> active_requests_{0};
+    SessionManager session_manager_;
 };
-
-std::size_t CaptionServiceImpl::max_concurrent_requests = kDefaultMaxConcurrentRequests;
 
 int main(int argc, char **argv)
 {
-    if (argc >= 2)
-    {
-        try
-        {
-            const long parsed = std::stol(argv[1]);
-            if (parsed <= 0)
-            {
-                std::cerr << "max_concurrent_requests must be a positive integer, got: "
-                          << argv[1] << std::endl;
-                return 1;
-            }
-            CaptionServiceImpl::max_concurrent_requests = static_cast<std::size_t>(parsed);
-        }
-        catch (const std::exception &)
-        {
-            std::cerr << "Invalid max_concurrent_requests value: " << argv[1] << std::endl;
-            return 1;
-        }
-    }
+    const std::size_t max_concurrent_requests = ParseMaxConcurrentRequests(argc, argv);
 
     std::string address = "0.0.0.0:50051";
-    CaptionServiceImpl service;
+    CaptionServiceImpl service(max_concurrent_requests);
     ServerBuilder builder;
     builder.AddListeningPort(address, InsecureServerCredentials());
     builder.RegisterService(&service);
-
+    
     std::unique_ptr<Server> server = builder.BuildAndStart();
-    std::cout << "Server ready: " << address << " (max concurrent requests: "
-              << CaptionServiceImpl::max_concurrent_requests << ")" << std::endl;
-
+    std::cout << "Server ready: " << address
+              << " (max concurrent requests: " << max_concurrent_requests << ")" << std::endl;
+    
     server->Wait();
 }
