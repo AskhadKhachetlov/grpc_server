@@ -63,15 +63,15 @@ namespace
         }
     }
 
-    class SessionManager
+    class SessionManager : public std::enable_shared_from_this<SessionManager>
     {
     public:
         class Session
         {
         public:
-            Session(Session &&other) noexcept : manager_(other.manager_)
+            Session(Session &&other) noexcept : manager_(std::move(other.manager_))
             {
-                other.manager_ = nullptr;
+                other.manager_.reset();
             }
 
             Session &operator=(Session &&other) noexcept
@@ -79,8 +79,8 @@ namespace
                 if (this != &other)
                 {
                     Release();
-                    manager_ = other.manager_;
-                    other.manager_ = nullptr;
+                    manager_ = std::move(other.manager_);
+                    other.manager_.reset();
                 }
                 return *this;
             }
@@ -96,18 +96,19 @@ namespace
         private:
             friend class SessionManager;
 
-            explicit Session(SessionManager *manager) : manager_(manager) {}
+            explicit Session(std::shared_ptr<SessionManager> manager)
+                : manager_(std::move(manager)) {}
 
             void Release()
             {
                 if (manager_ != nullptr)
                 {
                     manager_->ReleaseSlot();
-                    manager_ = nullptr;
+                    manager_.reset();
                 }
             }
 
-            SessionManager *manager_;
+            std::shared_ptr<SessionManager> manager_;
         };
 
         explicit SessionManager(std::size_t max_sessions) : available_slots_(max_sessions) {}
@@ -122,7 +123,7 @@ namespace
                         current, current - 1,
                         std::memory_order_acq_rel, std::memory_order_acquire))
                 {
-                    return Session(this);
+                    return Session(shared_from_this());
                 }
             }
 
@@ -146,7 +147,7 @@ class CaptionServiceImpl final : public CaptionService::CallbackService
 {
 public:
     explicit CaptionServiceImpl(std::size_t max_concurrent_requests)
-        : session_manager_(max_concurrent_requests) {}
+        : session_manager_(std::make_shared<SessionManager>(max_concurrent_requests)) {}
 
     ServerUnaryReactor *AddCaption(
         CallbackServerContext *context,
@@ -155,9 +156,9 @@ public:
     {
         ServerUnaryReactor *reactor = context->DefaultReactor();
 
-        auto session = session_manager_.CreateNewSession();
+        auto session = session_manager_->CreateNewSession();
 
-        if (!session.has_value())
+        if (!session)
         {
             reactor->Finish(Status(StatusCode::RESOURCE_EXHAUSTED,
                                    "Server is busy, try again later"));
@@ -188,7 +189,7 @@ public:
     }
 
 private:
-    SessionManager session_manager_;
+    std::shared_ptr<SessionManager> session_manager_;
 };
 
 int main(int argc, char **argv)
