@@ -7,6 +7,11 @@
 #include <exception>
 #include <optional>
 #include <cstdlib>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <functional>
+#include <condition_variable>
 
 #include <grpcpp/grpcpp.h>
 
@@ -36,6 +41,12 @@ namespace
     std::vector<std::uint8_t> ToBytes(const std::string &data)
     {
         return std::vector<std::uint8_t>(data.begin(), data.end());
+    }
+
+    std::size_t DefaultThreadPoolSize()
+    {
+        const unsigned int detected = std::thread::hardware_concurrency();
+        return detected > 0 ? detected : 4;
     }
 
     std::size_t ParseMaxConcurrentRequests(int argc, char **argv)
@@ -141,13 +152,79 @@ namespace
 
         std::atomic<std::size_t> available_slots_;
     };
+
+    class ThreadPool
+    {
+        public:
+            explicit ThreadPool(std::size_t thread_count)
+            {
+                for (std::size_t i = 0; i < thread_count; ++i)
+                {
+                    workers_.emplace_back([this]() { WorkerPool(); });
+                }
+            }
+
+            ~ThreadPool()
+            {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    stop_ = true;
+                }
+                cv_.notify_all();
+                for (std::thread &worker : workers_)
+                {
+                    worker.join();
+                }
+            }
+
+            ThreadPool(const ThreadPool &) = delete;
+            ThreadPool &operator=(const ThreadPool &) = delete;
+
+            void Enqueue(std::function<void()> task)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    tasks_.push(std::move(task));
+                }
+                cv_.notify_one();
+            }
+
+        private:
+            void WorkerPool()
+            {
+                while (true)
+                {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        cv_.wait(lock, [this]() { return stop_ || !tasks_.empty(); });
+
+                        if (stop_ && tasks_.empty())
+                        {
+                            return;
+                        }
+
+                        task = std::move(tasks_.front());
+                        tasks_.pop();
+                    }
+                    task();
+                }
+            }
+
+            std::vector<std::thread> workers_;
+            std::queue<std::function<void()>> tasks_;
+            std::mutex mutex_;
+            std::condition_variable cv_;
+            bool stop_ = false;
+    };
 } // namespace
 
 class CaptionServiceImpl final : public CaptionService::CallbackService
 {
 public:
     explicit CaptionServiceImpl(std::size_t max_concurrent_requests)
-        : session_manager_(std::make_shared<SessionManager>(max_concurrent_requests)) {}
+        : session_manager_(std::make_shared<SessionManager>(max_concurrent_requests)),
+          thread_pool_(DefaultThreadPoolSize()) {}
 
     ServerUnaryReactor *AddCaption(
         CallbackServerContext *context,
@@ -165,31 +242,46 @@ public:
             return reactor;
         }
 
-        const std::vector<std::uint8_t> input_bytes = ToBytes(request->image());
+        auto shared_session = std::make_shared<SessionManager::Session>(std::move(*session));
 
-        if (!ip::IsValidImage(input_bytes))
-        {
-            reactor->Finish(Status(StatusCode::INVALID_ARGUMENT, "Invalid image data"));
-            return reactor;
-        }
+        std::string image_data = request->image();
+        std::string caption = request->caption();
 
-        const cv::Mat decoded = ip::Decompress(input_bytes);
-        const cv::Mat captioned = ip::AddCaption(decoded, request->caption());
-        const std::vector<std::uint8_t> encoded = ip::Compress(captioned);
+        thread_pool_.Enqueue(
+            [reactor, response, shared_session,
+             image_data = std::move(image_data),
+             caption = std::move(caption)]()
+            {
+                const std::vector<std::uint8_t> input_bytes = ToBytes(image_data);
 
-        if (encoded.empty())
-        {
-            reactor->Finish(Status(StatusCode::INTERNAL, "Failed to encode result image"));
-            return reactor;
-        }
+                if (!ip::IsValidImage(input_bytes))
+                {
+                    reactor->Finish(Status(StatusCode::INVALID_ARGUMENT,
+                                    "Invalid image data"));
+                    return;
+                }
 
-        response->set_image(encoded.data(), encoded.size());
-        reactor->Finish(Status::OK);
+                const cv::Mat decoded = ip::Decompress(input_bytes);
+                const cv::Mat captioned = ip::AddCaption(decoded, caption);
+                const std::vector<std::uint8_t> encoded = ip::Compress(captioned);
+
+                if (encoded.empty())
+                {
+                    reactor->Finish(Status(StatusCode::INTERNAL,
+                                    "Failed to encode result image"));
+                    return;
+                }
+
+                response->set_image(encoded.data(), encoded.size());
+                reactor->Finish(Status::OK);
+            });
+
         return reactor;
     }
 
 private:
     std::shared_ptr<SessionManager> session_manager_;
+    ThreadPool thread_pool_;
 };
 
 int main(int argc, char **argv)
