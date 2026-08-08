@@ -72,15 +72,17 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        std::cerr << "Usage: " << argv[0] << " <image_path> <caption>" << std::endl;
+        std::cerr << "Usage: " << argv[0]
+                  << " <image_path> <caption> [output_path]" << std::endl;
         return 1;
     }
 
     const std::string image_path = argv[1];
     const std::string caption = argv[2];
+    const std::string output_path = (argc >= 4) ? argv[3] : "captioned_output.jpg";
 
     const std::string image_data = ReadFile(image_path);
-
+    
     if (image_data.empty())
     {
         std::cerr << "Failed to read image: " << image_path << std::endl;
@@ -97,7 +99,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    const std::string output_path = "captioned_output.jpg";
     std::ofstream out(output_path, std::ios::binary);
     out.write(result.data(), result.size());
 
