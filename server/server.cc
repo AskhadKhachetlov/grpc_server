@@ -7,11 +7,8 @@
 #include <exception>
 #include <optional>
 #include <cstdlib>
-#include <mutex>
-#include <queue>
 #include <thread>
-#include <functional>
-#include <condition_variable>
+#include <system_error>
 
 #include <grpcpp/grpcpp.h>
 
@@ -41,12 +38,6 @@ namespace
     std::vector<std::uint8_t> ToBytes(const std::string &data)
     {
         return std::vector<std::uint8_t>(data.begin(), data.end());
-    }
-
-    std::size_t DefaultThreadPoolSize()
-    {
-        const unsigned int detected = std::thread::hardware_concurrency();
-        return detected > 0 ? detected : 4;
     }
 
     std::size_t ParseMaxConcurrentRequests(int argc, char **argv)
@@ -152,79 +143,13 @@ namespace
 
         std::atomic<std::size_t> available_slots_;
     };
-
-    class ThreadPool
-    {
-        public:
-            explicit ThreadPool(std::size_t thread_count)
-            {
-                for (std::size_t i = 0; i < thread_count; ++i)
-                {
-                    workers_.emplace_back([this]() { WorkerPool(); });
-                }
-            }
-
-            ~ThreadPool()
-            {
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    stop_ = true;
-                }
-                cv_.notify_all();
-                for (std::thread &worker : workers_)
-                {
-                    worker.join();
-                }
-            }
-
-            ThreadPool(const ThreadPool &) = delete;
-            ThreadPool &operator=(const ThreadPool &) = delete;
-
-            void Enqueue(std::function<void()> task)
-            {
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    tasks_.push(std::move(task));
-                }
-                cv_.notify_one();
-            }
-
-        private:
-            void WorkerPool()
-            {
-                while (true)
-                {
-                    std::function<void()> task;
-                    {
-                        std::unique_lock<std::mutex> lock(mutex_);
-                        cv_.wait(lock, [this]() { return stop_ || !tasks_.empty(); });
-
-                        if (stop_ && tasks_.empty())
-                        {
-                            return;
-                        }
-
-                        task = std::move(tasks_.front());
-                        tasks_.pop();
-                    }
-                    task();
-                }
-            }
-
-            std::vector<std::thread> workers_;
-            std::queue<std::function<void()>> tasks_;
-            std::mutex mutex_;
-            std::condition_variable cv_;
-            bool stop_ = false;
-    };
 } // namespace
 
 class CaptionServiceImpl final : public CaptionService::CallbackService
 {
 public:
     explicit CaptionServiceImpl(std::size_t max_concurrent_requests)
-        : session_manager_(std::make_shared<SessionManager>(max_concurrent_requests)),
-          thread_pool_(DefaultThreadPoolSize()) {}
+        : session_manager_(std::make_shared<SessionManager>(max_concurrent_requests)) {}
 
     ServerUnaryReactor *AddCaption(
         CallbackServerContext *context,
@@ -242,22 +167,20 @@ public:
             return reactor;
         }
 
-        auto shared_session = std::make_shared<SessionManager::Session>(std::move(*session));
-
         std::string image_data = request->image();
         std::string caption = request->caption();
 
-        thread_pool_.Enqueue(
-            [reactor, response, shared_session,
+        auto worker = [reactor, response, session = std::move(*session),
              image_data = std::move(image_data),
              caption = std::move(caption)]()
+        {
+            try
             {
                 const std::vector<std::uint8_t> input_bytes = ToBytes(image_data);
 
                 if (!ip::IsValidImage(input_bytes))
                 {
-                    reactor->Finish(Status(StatusCode::INVALID_ARGUMENT,
-                                    "Invalid image data"));
+                    reactor->Finish(Status(StatusCode::INVALID_ARGUMENT, "Invalid image data"));
                     return;
                 }
 
@@ -267,21 +190,39 @@ public:
 
                 if (encoded.empty())
                 {
-                    reactor->Finish(Status(StatusCode::INTERNAL,
-                                    "Failed to encode result image"));
+                    reactor->Finish(Status(StatusCode::INTERNAL, "Failed to encode result image"));
                     return;
                 }
 
                 response->set_image(encoded.data(), encoded.size());
                 reactor->Finish(Status::OK);
-            });
+            }
+            catch (const std::exception &e)
+            {
+                reactor->Finish(Status(StatusCode::INTERNAL,
+                                       std::string("Image processing failed: ") + e.what()));
+            }
+            catch (...)
+            {
+                reactor->Finish(Status(StatusCode::INTERNAL, "Unknown image processing error"));
+            }
+        };
+
+        try
+        {
+            std::thread(std::move(worker)).detach();
+        }
+        catch (const std::system_error &e)
+        {
+            reactor->Finish(Status(StatusCode::RESOURCE_EXHAUSTED,
+                                   std::string("Failed to start worker thread: ") + e.what()));
+        }
 
         return reactor;
     }
 
 private:
     std::shared_ptr<SessionManager> session_manager_;
-    ThreadPool thread_pool_;
 };
 
 int main(int argc, char **argv)
