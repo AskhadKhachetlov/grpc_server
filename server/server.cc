@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <thread>
 #include <system_error>
+#include <csignal>
 
 #include <grpcpp/grpcpp.h>
 
@@ -227,6 +228,12 @@ private:
 
 int main(int argc, char **argv)
 {
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGINT);
+    sigaddset(&signal_set, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &signal_set, nullptr);
+
     const std::size_t max_concurrent_requests = ParseMaxConcurrentRequests(argc, argv);
 
     std::string address = "0.0.0.0:50051";
@@ -234,10 +241,21 @@ int main(int argc, char **argv)
     ServerBuilder builder;
     builder.AddListeningPort(address, InsecureServerCredentials());
     builder.RegisterService(&service);
-    
+
     std::unique_ptr<Server> server = builder.BuildAndStart();
+
+    std::thread shutdown_waiter(
+        [&signal_set, &server]()
+        {
+            int recevied_signal = 0;
+            sigwait(&signal_set, &recevied_signal);
+            server->Shutdown();
+        });
+
     std::cout << "Server ready: " << address
-              << " (max concurrent requests: " << max_concurrent_requests << ")" << std::endl;
-    
+              << " (max concurrent requests: " << max_concurrent_requests << ")"
+              << std::endl;
+
     server->Wait();
+    shutdown_waiter.join();
 }
