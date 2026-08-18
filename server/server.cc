@@ -7,6 +7,9 @@
 #include <exception>
 #include <optional>
 #include <cstdlib>
+#include <thread>
+#include <system_error>
+#include <csignal>
 
 #include <grpcpp/grpcpp.h>
 
@@ -165,26 +168,57 @@ public:
             return reactor;
         }
 
-        const std::vector<std::uint8_t> input_bytes = ToBytes(request->image());
+        std::string image_data = request->image();
+        std::string caption = request->caption();
 
-        if (!ip::IsValidImage(input_bytes))
+        auto worker = [reactor, response, session = std::move(*session),
+             image_data = std::move(image_data),
+             caption = std::move(caption)]()
         {
-            reactor->Finish(Status(StatusCode::INVALID_ARGUMENT, "Invalid image data"));
-            return reactor;
+            try
+            {
+                const std::vector<std::uint8_t> input_bytes = ToBytes(image_data);
+
+                if (!ip::IsValidImage(input_bytes))
+                {
+                    reactor->Finish(Status(StatusCode::INVALID_ARGUMENT, "Invalid image data"));
+                    return;
+                }
+
+                const cv::Mat decoded = ip::Decompress(input_bytes);
+                const cv::Mat captioned = ip::AddCaption(decoded, caption);
+                const std::vector<std::uint8_t> encoded = ip::Compress(captioned);
+
+                if (encoded.empty())
+                {
+                    reactor->Finish(Status(StatusCode::INTERNAL, "Failed to encode result image"));
+                    return;
+                }
+
+                response->set_image(encoded.data(), encoded.size());
+                reactor->Finish(Status::OK);
+            }
+            catch (const std::exception &e)
+            {
+                reactor->Finish(Status(StatusCode::INTERNAL,
+                                       std::string("Image processing failed: ") + e.what()));
+            }
+            catch (...)
+            {
+                reactor->Finish(Status(StatusCode::INTERNAL, "Unknown image processing error"));
+            }
+        };
+
+        try
+        {
+            std::thread(std::move(worker)).detach();
+        }
+        catch (const std::system_error &e)
+        {
+            reactor->Finish(Status(StatusCode::RESOURCE_EXHAUSTED,
+                                   std::string("Failed to start worker thread: ") + e.what()));
         }
 
-        const cv::Mat decoded = ip::Decompress(input_bytes);
-        const cv::Mat captioned = ip::AddCaption(decoded, request->caption());
-        const std::vector<std::uint8_t> encoded = ip::Compress(captioned);
-
-        if (encoded.empty())
-        {
-            reactor->Finish(Status(StatusCode::INTERNAL, "Failed to encode result image"));
-            return reactor;
-        }
-
-        response->set_image(encoded.data(), encoded.size());
-        reactor->Finish(Status::OK);
         return reactor;
     }
 
@@ -194,6 +228,12 @@ private:
 
 int main(int argc, char **argv)
 {
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGINT);
+    sigaddset(&signal_set, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &signal_set, nullptr);
+
     const std::size_t max_concurrent_requests = ParseMaxConcurrentRequests(argc, argv);
 
     std::string address = "0.0.0.0:50051";
@@ -201,10 +241,21 @@ int main(int argc, char **argv)
     ServerBuilder builder;
     builder.AddListeningPort(address, InsecureServerCredentials());
     builder.RegisterService(&service);
-    
+
     std::unique_ptr<Server> server = builder.BuildAndStart();
+
+    std::thread shutdown_waiter(
+        [&signal_set, &server]()
+        {
+            int recevied_signal = 0;
+            sigwait(&signal_set, &recevied_signal);
+            server->Shutdown();
+        });
+
     std::cout << "Server ready: " << address
-              << " (max concurrent requests: " << max_concurrent_requests << ")" << std::endl;
-    
+              << " (max concurrent requests: " << max_concurrent_requests << ")"
+              << std::endl;
+
     server->Wait();
+    shutdown_waiter.join();
 }
